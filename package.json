@@ -1,11 +1,11 @@
 {
-  "name": "typescript-library-skeleton",
+  "name": "@oresoftware/noise.audio",
   "version": "0.1.123",
   "description": "Semver-oriented TypeScript library skeleton.",
   "main": "dist/main.js",
   "bin": {
-    "example": "cli/example.sh",
-    "example.js": "cli/example.js"
+    "noise-sleep-audio.sh": "cli/example.sh",
+    "noise-sleep-audio": "cli/example.js"
   },
   "types": "dist/main.d.ts",
   "typings": "dist/main.d.ts",

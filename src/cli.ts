@@ -1,113 +1,88 @@
 #!/usr/bin/env node
 'use strict';
 
-import * as cp from 'child_process';
-import * as path from 'path';
 import * as fs from 'fs';
-import * as http from 'http';
-import * as assert from 'assert';
-import * as EE from 'events';
-import * as strm from "stream";
-
-import * as Tone from "tone";
+import * as path from 'path';
 // @ts-ignore
 import * as WavEncoder from "wav-encoder";
-import { writeFileSync } from "fs";
 
-async function generateNoiseAudio() {
-  const sampleRate = 44100; // Standard audio sample rate
-  const duration = 6 * 60; // 6 minutes in seconds
-  const noiseTypes = ["brown", "white", "pink", "gray"] as const;
-  let currentNoise: typeof noiseTypes[number] = "white";
+const sampleRate = 44100; // Standard audio sample rate
+const duration = 6 * 60; // 6 minutes in seconds
+const baseWavelength = 4; // Standard wavelength in seconds
+const noiseTypes = ["gray", "pink", "red", "green"] as const;
+const sineWavesCount = noiseTypes.length;
 
-  const transitionDuration = 2; // Transition duration in seconds
-  let remainingTime = duration;
+async function generateContinualSineWaves() {
+  const totalSamples = sampleRate * duration;
+  const sineWaves: Float32Array[] = [];
+  const maxDeviation = 0.5; // Allow wavelength deviation by ±50%
+  const maxVolume = 1; // Maximum amplitude
 
-  // Initialize an audio buffer
-  const audioBuffer = new Float32Array(sampleRate * duration);
+  // Helper: Generate a single sine wave with random wavelength deviation
+  function generateSineWave(noiseType: typeof noiseTypes[number], staggerOffset: number): Float32Array {
+    const buffer = new Float32Array(totalSamples);
+    let time = staggerOffset / sampleRate; // Start time with stagger
+    let wavelength = baseWavelength; // Start with the base wavelength
+    let amplitude = 0.5; // Initial volume
 
-  // Helper: Generate noise
-  function generateNoise(type: typeof noiseTypes[number], length: number) {
-    const buffer = new Float32Array(length);
-    const random = Math.random;
-    let lastBrown = 0;
+    for (let i = 0; i < totalSamples; i++) {
+      const t = time * Math.PI * 2 / wavelength; // Convert time to phase
 
-    for (let i = 0; i < length; i++) {
-      switch (type) {
-        case "white":
-          buffer[i] = random() * 2 - 1;
+      // Generate noise based on type
+      let noise = 0;
+      switch (noiseType) {
+        case "gray":
+          noise = Math.random() * 2 - 1; // Wideband noise
           break;
         case "pink":
-          buffer[i] = (random() + random() - 1) * 0.5;
+          noise = ((Math.random() + Math.random() - 1) * 0.5); // Reduced high-frequency content
           break;
-        case "brown":
-          lastBrown += random() * 2 - 1;
-          buffer[i] = lastBrown * 0.02; // Scale to prevent overflow
-          lastBrown *= 0.98; // Damping factor
+        case "red":
+          noise = (Math.random() - 0.5) * 0.3; // Smoothed for low-frequency emphasis
           break;
-        case "gray":
-          buffer[i] = (random() * 2 - 1) * 0.8; // Slightly softer white noise
+        case "green":
+          noise = Math.sin(Math.random() * Math.PI); // Moderate midrange variation
           break;
       }
-    }
 
+      // Adjust amplitude and filter sharpness
+      const scaledNoise = noise * amplitude;
+      buffer[i] += Math.sin(t) * scaledNoise;
+
+      // Increment time
+      time += 1 / sampleRate;
+
+      // Randomly adjust wavelength periodically
+      if (i % (sampleRate / 10) === 0) {
+        wavelength = baseWavelength * (1 + (Math.random() * 2 - 1) * maxDeviation);
+        amplitude = Math.random() * maxVolume;
+      }
+    }
     return buffer;
   }
 
-  // Helper: Blend between two buffers
-  function blendBuffers(buffer1: Float32Array, buffer2: Float32Array, blendFactor: number) {
-    const length = buffer1.length;
-    const result = new Float32Array(length);
-
-    for (let i = 0; i < length; i++) {
-      result[i] = buffer1[i] * (1 - blendFactor) + buffer2[i] * blendFactor;
-    }
-
-    return result;
+  // Generate sine waves for each noise type with staggered starts
+  for (let i = 0; i < sineWavesCount; i++) {
+    const staggerOffset = Math.random() * sampleRate; // Random stagger offset < 1 second
+    sineWaves.push(generateSineWave(noiseTypes[i], staggerOffset));
   }
 
-  let writeIndex = 0;
-
-  while (remainingTime > 0) {
-    // Decide how long to play this noise
-    const noiseSegmentDuration = Math.min(
-      remainingTime,
-      Math.random() * 4 + 3 // Random between 3-7 seconds
-    );
-    const segmentSamples = Math.floor(noiseSegmentDuration * sampleRate);
-
-    // Choose the next noise type and generate buffers
-    const nextNoise = noiseTypes[Math.floor(Math.random() * noiseTypes.length)];
-    const currentBuffer = generateNoise(currentNoise, segmentSamples);
-    const nextBuffer = generateNoise(nextNoise, Math.floor(transitionDuration * sampleRate));
-
-    // Blend for a smooth transition
-    for (let t = 0; t < transitionDuration * sampleRate; t++) {
-      const blendFactor = t / (transitionDuration * sampleRate);
-      const blendedSample = blendBuffers(
-        currentBuffer.slice(t, t + 1),
-        nextBuffer.slice(t, t + 1),
-        blendFactor
-      );
-      audioBuffer[writeIndex++] = blendedSample[0];
+  // Combine all sine waves into a single buffer
+  const combinedBuffer = new Float32Array(totalSamples);
+  sineWaves.forEach((wave) => {
+    for (let i = 0; i < totalSamples; i++) {
+      combinedBuffer[i] += wave[i] / sineWavesCount; // Normalize by number of waves
     }
-
-    // Add the current buffer to the main audio buffer
-    audioBuffer.set(currentBuffer.slice(0, segmentSamples), writeIndex);
-    writeIndex += segmentSamples;
-
-    currentNoise = nextNoise;
-    remainingTime -= noiseSegmentDuration + transitionDuration;
-  }
-
-  // Encode and save the audio
-  const wavData = await WavEncoder.encode({
-    sampleRate,
-    channelData: [audioBuffer]
   });
 
-  writeFileSync("output.wav", Buffer.from(wavData));
-  console.log("Audio file saved as output.wav");
+  // Encode and save the combined audio
+  const wavData = await WavEncoder.encode({
+    sampleRate,
+    channelData: [combinedBuffer]
+  });
+
+  fs.writeFileSync("output_sine_noise.wav", Buffer.from(wavData));
+  console.log("Audio file saved as output_sine_noise.wav");
 }
 
-generateNoiseAudio().catch(console.error);
+generateContinualSineWaves().catch(console.error);
